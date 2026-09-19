@@ -266,7 +266,7 @@ public class MainActivity extends Activity {
                 .apply();
 
         double idxTarget = (z <= 161 ? 24.0 : 48.0) * k / z;
-        List<Candidate> idx = GearSolver.solve(idxTarget, available(machine), 5);
+        List<Candidate> idx = GearSolver.solve(idxTarget, available(machine), 5, machine, false);
         indexingCandidate = idx.isEmpty() ? null : idx.get(0);
 
         String ef = z <= 161 ? machine.lowEf : machine.highEf;
@@ -289,7 +289,7 @@ public class MainActivity extends Activity {
         if (helical) {
             diffCard.setVisibility(View.VISIBLE);
             double diffTarget = 7.95775 * Math.sin(Math.toRadians(beta)) / (mn * k);
-            diffs = GearSolver.solve(diffTarget, available(machine), 5);
+            diffs = GearSolver.solve(diffTarget, available(machine), 5, machine, true);
             differentialCandidate = diffs.isEmpty() ? null : diffs.get(0);
             differentialFormula.setText(
                     "Требуемое отношение: 7,95775·sinβ/(mₙ·k) = " + fmt(diffTarget, 8));
@@ -321,10 +321,14 @@ public class MainActivity extends Activity {
         double ppm = c.relError * 1_000_000.0;
         String quality = c.relError <= 1e-6 ? "очень точно"
                 : (c.relError <= 1e-4 ? "точно" : "проверьте допуск");
+        String meshCheck = "";
+        if ("53a50n".equals(machine.key) && !c.twoGear) {
+            meshCheck = " • предварительная проверка сцепляемости по диапазонам паспортного графика: ОК";
+        }
         error.setText(
                 "Фактическое отношение " + fmt(c.actual, 9) +
                         " • ошибка " + fmt(c.relError * 100.0, 6) + "% (" +
-                        fmt(ppm, 1) + " ppm) • " + quality);
+                        fmt(ppm, 1) + " ppm) • " + quality + meshCheck);
 
         String labelA = diff ? "a₁" : "A";
         String labelB = diff ? "b₁" : "B";
@@ -358,9 +362,15 @@ public class MainActivity extends Activity {
         String hob = hobHandSpinner.getSelectedItemPosition() == 0 ? "правая" : "левая";
         String method = cutMethodSpinner.getSelectedItemPosition() == 0 ? "встречное" : "попутное";
 
-        String recommendation = helixSpinner.getSelectedItemPosition() == hobHandSpinner.getSelectedItemPosition()
-                ? "Направление зуба и фрезы одинаковое — особенно внимательно проверьте направление дифференциала и промежуточные колёса по схеме станка."
-                : "Направление зуба и фрезы противоположное — это предпочтительная комбинация для 53А50Н по паспортной памятке.";
+        boolean sameHand = helixSpinner.getSelectedItemPosition() == hobHandSpinner.getSelectedItemPosition();
+        String recommendation;
+        if ("53a50n".equals(machine.key)) {
+            recommendation = sameHand
+                    ? "Направление зуба и фрезы одинаковое — это штатный вариант. Паспорт рекомендует избегать правого зуба с левой фрезой и левого зуба с правой фрезой."
+                    : "Направление зуба и фрезы противоположное. Паспорт 53А50Н рекомендует такого сочетания избегать; оно приведено в таблице настройки только для справки.";
+        } else {
+            recommendation = "Для 5Е32 обязательно проверьте направление вращения стола и фрезы по заводской схеме перед запуском.";
+        }
 
         return "Косой зуб: " + gearHelix + " наклон, " + hob.toLowerCase() +
                 " фреза, " + method + " фрезерование, β=" + angleText(beta) + ". " +
@@ -823,15 +833,17 @@ public class MainActivity extends Activity {
     }
 
     static class GearSolver {
-        static List<Candidate> solve(double target, List<Integer> gears, int limit) {
+        static List<Candidate> solve(double target, List<Integer> gears, int limit,
+                                     MachineConfig machine, boolean differential) {
             List<Candidate> best = new ArrayList<>();
             if (target <= 0 || gears.size() < 2) return best;
 
             for (int i = 0; i < gears.size(); i++) {
                 for (int j = 0; j < gears.size(); j++) {
                     if (i == j) continue;
-                    offer(best, new Candidate(
-                            gears.get(i), gears.get(j), 0, 0, true, target), limit);
+                    Candidate two = new Candidate(
+                            gears.get(i), gears.get(j), 0, 0, true, target);
+                    if (meshable(two, machine, differential)) offer(best, two, limit);
                 }
             }
 
@@ -859,10 +871,11 @@ public class MainActivity extends Activity {
                         }
 
                         if (bestL >= 0) {
-                            offer(best, new Candidate(
+                            Candidate four = new Candidate(
                                     gears.get(i), gears.get(j),
                                     gears.get(k), gears.get(bestL),
-                                    false, target), limit);
+                                    false, target);
+                            if (meshable(four, machine, differential)) offer(best, four, limit);
                         }
                     }
                 }
@@ -870,6 +883,24 @@ public class MainActivity extends Activity {
 
             Collections.sort(best, cmp());
             return dedupe(best, limit);
+        }
+
+        static boolean meshable(Candidate c, MachineConfig machine, boolean differential) {
+            if (c.twoGear || machine == null || !"53a50n".equals(machine.key)) return true;
+
+            int firstPair = c.a + c.b;
+            int secondPair = c.c + c.d;
+
+            // Passport graphs, 53A50/53A50N (work diameter up to 500 mm):
+            // indexing quadrant: first pair 95..158, second pair 75..145;
+            // differential quadrant: first pair 58..120, second pair 80..190.
+            // This is a conservative numeric pre-check of the plotted meshability network.
+            if (differential) {
+                return firstPair >= 58 && firstPair <= 120
+                        && secondPair >= 80 && secondPair <= 190;
+            }
+            return firstPair >= 95 && firstPair <= 158
+                    && secondPair >= 75 && secondPair <= 145;
         }
 
         static void offer(List<Candidate> list, Candidate c, int limit) {
