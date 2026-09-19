@@ -281,6 +281,7 @@ public class MainActivity extends Activity {
             indexingDiagram.setCandidate(null, false);
         } else {
             fillResult(indexingCandidate, indexingRatio, indexingError, indexingMount, indexingDiagram, false);
+            indexingMount.append("\nПеребор e/f: " + ef + ". Установите эту пару вместе с рассчитанной гитарой деления.");
         }
 
         View diffCard = resultsBox.findViewWithTag("diffCard");
